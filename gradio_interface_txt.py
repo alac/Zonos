@@ -69,15 +69,18 @@ def add_silence_padding(wav: torch.Tensor, sr: int, duration: float = 0.1) -> to
 def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
     """
     Split text into chunks of up to max_words, preferring natural break points.
+    Tries to avoid splitting phrases awkwardly.
     
     Args:
         text: The input text to split
         max_words: Maximum number of words per chunk
+    
     Returns:
         List of text chunks
     """
     # Define break points in order of preference
-    break_points = ['. ', '! ', '? ', '; ', ', ', ' ']
+    major_breaks = ['. ', '! ', '? ', '\n']  # Sentence endings
+    minor_breaks = ['; ', ': ', ', ']        # Clause breaks
     
     chunks = []
     while text:
@@ -88,29 +91,47 @@ def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
             if text:
                 chunks.append(text)
             break
+            
+        # Look for break points within a window slightly larger than max_words
+        # This allows us to look a bit ahead for better break points
+        search_window = ' '.join(text.split()[:max_words + 5])
         
-        # Find the best break point within our word limit
-        best_break = None
+        # First try to find major breaks within the normal word limit
+        normal_window = ' '.join(text.split()[:max_words])
         best_pos = -1
+        best_break = None
         
-        # Get the text within our word limit
-        words = text.split()[:max_words]
-        candidate_text = ' '.join(words)
-        
-        # Try each break point in order of preference
-        for break_point in break_points:
-            pos = candidate_text.rfind(break_point)
+        # Try major breaks first within normal window
+        for break_point in major_breaks:
+            pos = normal_window.rfind(break_point)
             if pos > best_pos:
                 best_pos = pos
                 best_break = break_point
-        
+                
+        # If no major break found, try minor breaks within normal window
         if best_pos == -1:
-            # If no break point found, force break at max_words
-            pos = len(' '.join(words[:max_words-1]))
-            chunks.append(text[:pos].strip())
-            text = text[pos:].strip()
+            for break_point in minor_breaks:
+                pos = normal_window.rfind(break_point)
+                if pos > best_pos:
+                    best_pos = pos
+                    best_break = break_point
+        
+        # If still no break found within normal window, look in extended window
+        if best_pos == -1:
+            for break_point in (major_breaks + minor_breaks):
+                pos = search_window.rfind(break_point)
+                if pos > best_pos and pos < len(normal_window) * 1.2:  # Allow slight overflow
+                    best_pos = pos
+                    best_break = break_point
+        
+        # If still no break found, force break at word boundary near max_words
+        if best_pos == -1:
+            words = text.split()[:max_words]
+            best_pos = len(' '.join(words))
+            chunks.append(text[:best_pos].strip())
+            text = text[best_pos:].strip()
         else:
-            # Split at the best break point found
+            # Include the break point in the chunk
             chunks.append(text[:best_pos + len(best_break)].strip())
             text = text[best_pos + len(best_break):].strip()
     
@@ -385,7 +406,7 @@ def generate_audio(
             with open(file.name, 'r', encoding='utf-8') as f:
                 full_text = f.read()
 
-            chunks = split_into_chunks(full_text, max_words=20)
+            chunks = split_into_chunks(full_text, max_words=25)
             
             for i, chunk in enumerate(chunks):
                 print(f"Generating audio for chunk {i+1}/{len(chunks)}: '{chunk}'")
@@ -614,7 +635,7 @@ def build_interface():
             with gr.Column():
                 gr.Markdown("## Generation Parameters")
                 cfg_scale_slider = gr.Slider(1.0, 5.0, 2.0, 0.1, label="CFG Scale")
-                min_p_slider = gr.Slider(0.0, 1.0, 0.15, 0.01, label="Min P")
+                min_p_slider = gr.Slider(0.0, 1.0, 0.10, 0.01, label="Min P")
                 seed_number = gr.Number(label="Seed", value=420, precision=0)
                 randomize_seed_toggle = gr.Checkbox(label="Randomize Seed (before generation)", value=True)
 
