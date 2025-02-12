@@ -33,6 +33,13 @@ def split_last_seconds(wav: torch.Tensor, sr: int, duration: float = .2) -> tupl
     return most_of_wav, last_second
 
 
+def add_silence_padding(wav: torch.Tensor, sr: int, duration: float = 0.1) -> torch.Tensor:
+    """Add small silence padding to the audio."""
+    silence_samples = int(sr * duration)
+    silence = torch.zeros((*wav.shape[:-1], silence_samples), device=wav.device)
+    return torch.cat([wav, silence], dim=-1)
+
+
 def load_model_if_needed(model_choice: str):
     global CURRENT_MODEL_TYPE, CURRENT_MODEL
     if CURRENT_MODEL_TYPE != model_choice:
@@ -176,6 +183,7 @@ def generate_audio(
             
             for i, current_text in enumerate(lines):
                 print(f"Generating audio for line {i+1}/{len(lines)}: '{current_text}'")
+                current_text = f", {current_text}, "
 
                 # Handle prefix audio
                 audio_prefix_codes = None
@@ -239,6 +247,8 @@ def generate_audio(
                 wav_out_2d = wav_out.squeeze(0)
                 if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
                     wav_out_2d = wav_out_2d[0:1, :]
+
+                wav_out_2d = add_silence_padding(wav_out_2d, sr_out)
 
                 all_wavs.append(wav_out_2d)
                 previous_wav = wav_out_2d
