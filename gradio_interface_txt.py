@@ -21,6 +21,18 @@ def get_speaker_files():
     return speaker_files
 
 
+def split_last_seconds(wav: torch.Tensor, sr: int, duration: float = .2) -> tuple[torch.Tensor, torch.Tensor]:
+    """Split audio tensor into (prefix, last_second)"""
+    last_second_samples = int(sr*duration)  # Since sr is samples per second
+
+    if wav.size(-1) <= last_second_samples:
+        return wav, None
+    
+    most_of_wav = wav[..., :-last_second_samples]
+    last_second = wav[..., -last_second_samples:]
+    return most_of_wav, last_second
+
+
 def load_model_if_needed(model_choice: str):
     global CURRENT_MODEL_TYPE, CURRENT_MODEL
     if CURRENT_MODEL_TYPE != model_choice:
@@ -152,8 +164,9 @@ def generate_audio(
 
     if txt_file:
         print("Processing text file...")
-        concatenated_wav = None
+        all_wavs = []
         sr_out_final = None
+        previous_wav = None
         
         # Initial prefix audio
         initial_prefix = prefix_audio if prefix_audio else None
@@ -164,17 +177,28 @@ def generate_audio(
             for i, current_text in enumerate(lines):
                 print(f"Generating audio for line {i+1}/{len(lines)}: '{current_text}'")
 
-                # Use either initial prefix or last generated audio as prefix
+                # Handle prefix audio
                 audio_prefix_codes = None
                 if i == 0 and initial_prefix is not None:
+                    # Handle initial prefix from file
                     wav_prefix, sr_prefix = torchaudio.load(initial_prefix)
                     wav_prefix = wav_prefix.mean(0, keepdim=True)
-
                     wav_prefix = torchaudio.functional.resample(wav_prefix, sr_prefix, selected_model.autoencoder.sampling_rate)
                     wav_prefix = wav_prefix.to(device, dtype=torch.float32)
                     with torch.autocast(device, dtype=torch.float32):
                         audio_prefix_codes = selected_model.autoencoder.encode(wav_prefix.unsqueeze(0))
+                elif i > 0 and previous_wav is not None:
+                    # Split previous wav and use last second as prefix
+                    most_of_wav, last_second = split_last_seconds(previous_wav, selected_model.autoencoder.sampling_rate)
+                    all_wavs[-1] = most_of_wav
+                    
+                    if last_second is not None:
+                        # Move tensor to the correct device and ensure correct format
+                        last_second = last_second.to(device, dtype=torch.float32)
+                        with torch.autocast(device, dtype=torch.float32):
+                            audio_prefix_codes = selected_model.autoencoder.encode(last_second.unsqueeze(0))
 
+                # Generate current line
                 cond_dict = make_cond_dict(
                     text=current_text,
                     language=language,
@@ -210,23 +234,21 @@ def generate_audio(
 
                 wav_out = selected_model.autoencoder.decode(codes).cpu().detach()
                 sr_out = selected_model.autoencoder.sampling_rate
+                sr_out_final = sr_out
 
                 wav_out_2d = wav_out.squeeze(0)
                 if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
                     wav_out_2d = wav_out_2d[0:1, :]
-                
-                # Add small silence between lines
-                silence_samples = int(0.1 * sr_out)  # 200ms silence
-                silence = torch.zeros((1, silence_samples), device=wav_out_2d.device)
-                wav_out_2d = torch.cat([wav_out_2d, silence], dim=-1)
 
-                if concatenated_wav is None:
-                    concatenated_wav = wav_out_2d
-                else:
-                    concatenated_wav = torch.cat([concatenated_wav, wav_out_2d], dim=-1)
-                sr_out_final = sr_out
+                all_wavs.append(wav_out_2d)
+                previous_wav = wav_out_2d
 
-        if concatenated_wav is not None and sr_out_final is not None:
+        # Concatenate all wavs
+        if all_wavs and sr_out_final is not None:
+            concatenated_wav = torch.cat(all_wavs, dim=-1)
+            if os.path.exists("sample.wav"):
+                os.remove("sample.wav")
+            torchaudio.save("sample.wav", concatenated_wav, sr_out_final)
             return (sr_out_final, concatenated_wav.squeeze().numpy()), seed
         else:
             return (None, None), seed
