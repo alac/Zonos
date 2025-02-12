@@ -215,6 +215,11 @@ def generate_audio(
                 if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
                     wav_out_2d = wav_out_2d[0:1, :]
                 
+                # Add small silence between lines
+                silence_samples = int(0.1 * sr_out)  # 200ms silence
+                silence = torch.zeros((1, silence_samples), device=wav_out_2d.device)
+                wav_out_2d = torch.cat([wav_out_2d, silence], dim=-1)
+
                 if concatenated_wav is None:
                     concatenated_wav = wav_out_2d
                 else:
