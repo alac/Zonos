@@ -19,6 +19,7 @@ device = "cuda"
 CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
 
+PROCESS_IN_CHUNKS = True
 
 def wav_to_mp3(wav_data: np.ndarray, sample_rate: int, output_filename: str) -> str:
     """Convert numpy wav data to MP3 file and return the path"""
@@ -63,6 +64,57 @@ def add_silence_padding(wav: torch.Tensor, sr: int, duration: float = 0.1) -> to
     silence_samples = int(sr * duration)
     silence = torch.zeros((*wav.shape[:-1], silence_samples), device=wav.device)
     return torch.cat([wav, silence], dim=-1)
+
+
+def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
+    """
+    Split text into chunks of up to max_words, preferring natural break points.
+    
+    Args:
+        text: The input text to split
+        max_words: Maximum number of words per chunk
+    Returns:
+        List of text chunks
+    """
+    # Define break points in order of preference
+    break_points = ['. ', '! ', '? ', '; ', ', ', ' ']
+    
+    chunks = []
+    while text:
+        text = text.strip()
+        
+        # If remaining text is short enough, add it as the final chunk
+        if len(text.split()) <= max_words:
+            if text:
+                chunks.append(text)
+            break
+        
+        # Find the best break point within our word limit
+        best_break = None
+        best_pos = -1
+        
+        # Get the text within our word limit
+        words = text.split()[:max_words]
+        candidate_text = ' '.join(words)
+        
+        # Try each break point in order of preference
+        for break_point in break_points:
+            pos = candidate_text.rfind(break_point)
+            if pos > best_pos:
+                best_pos = pos
+                best_break = break_point
+        
+        if best_pos == -1:
+            # If no break point found, force break at max_words
+            pos = len(' '.join(words[:max_words-1]))
+            chunks.append(text[:pos].strip())
+            text = text[pos:].strip()
+        else:
+            # Split at the best break point found
+            chunks.append(text[:best_pos + len(best_break)].strip())
+            text = text[best_pos + len(best_break):].strip()
+    
+    return chunks
 
 
 def load_model_if_needed(model_choice: str):
@@ -194,7 +246,7 @@ def generate_audio(
     vq_val = float(vq_single)
     vq_tensor = torch.tensor([vq_val] * 8, device=device).unsqueeze(0)
 
-    if txt_files:
+    if txt_files and not PROCESS_IN_CHUNKS:
         print("Processing text files...")
         output_files = []
         
@@ -307,6 +359,126 @@ def generate_audio(
         # Return the last generated audio for preview
         if output_files:
             # Load the last MP3 for preview
+            audio_segment = AudioSegment.from_mp3(output_files[-1])
+            numpy_array = np.array(audio_segment.get_array_of_samples())
+            return (sr_out_final, numpy_array), seed
+        else:
+            return (None, None), seed
+
+    elif txt_files and PROCESS_IN_CHUNKS:
+        print("Processing text files...")
+        output_files = []
+        
+        for file in txt_files:
+            output_filename = os.path.splitext(file.name)[0] + '.mp3'
+            output_filename = os.path.basename(output_filename)
+            print(f"Processing {file.name} -> {output_filename}")
+            
+            all_wavs = []
+            sr_out_final = None
+            previous_wav = None
+            previous_text = None
+
+            # Initial prefix audio
+            initial_prefix = prefix_audio if prefix_audio else None
+
+            with open(file.name, 'r', encoding='utf-8') as f:
+                full_text = f.read()
+
+            chunks = split_into_chunks(full_text, max_words=20)
+            
+            for i, chunk in enumerate(chunks):
+                print(f"Generating audio for chunk {i+1}/{len(chunks)}: '{chunk}'")
+                
+                # Handle prefix audio
+                audio_prefix_codes = None
+                prefix_length = None
+                
+                if i == 0 and initial_prefix is not None:
+                    # Handle initial prefix from file
+                    wav_prefix, sr_prefix = torchaudio.load(initial_prefix)
+                    wav_prefix = wav_prefix.mean(0, keepdim=True)
+                    wav_prefix = torchaudio.functional.resample(wav_prefix, sr_prefix, selected_model.autoencoder.sampling_rate)
+                    wav_prefix = wav_prefix.to(device, dtype=torch.float32)
+                    with torch.autocast(device, dtype=torch.float32):
+                        audio_prefix_codes = selected_model.autoencoder.encode(wav_prefix.unsqueeze(0))
+                    prefix_length = wav_prefix.size(-1)
+                elif i > 0 and previous_wav is not None:
+                    # Use entire previous chunk as prefix
+                    previous_wav = previous_wav.to(device, dtype=torch.float32)
+                    with torch.autocast(device, dtype=torch.float32):
+                        audio_prefix_codes = selected_model.autoencoder.encode(previous_wav.unsqueeze(0))
+                    prefix_length = previous_wav.size(-1)
+
+                combined_text = chunk
+                if previous_text:
+                    combined_text = previous_text + " " + chunk
+
+                # Generate current chunk
+                cond_dict = make_cond_dict(
+                    text=combined_text,
+                    language=language,
+                    speaker=speaker_embedding,
+                    emotion=emotion_tensor,
+                    vqscore_8=vq_tensor,
+                    fmax=fmax,
+                    pitch_std=pitch_std,
+                    speaking_rate=speaking_rate,
+                    dnsmos_ovrl=dnsmos_ovrl,
+                    speaker_noised=speaker_noised_bool,
+                    device=device,
+                    unconditional_keys=unconditional_keys,
+                )
+                conditioning = selected_model.prepare_conditioning(cond_dict)
+
+                estimated_generation_duration = 30 * len(combined_text) / 400
+                estimated_total_steps = int(estimated_generation_duration * 86)
+
+                def update_progress_file(_frame: torch.Tensor, step: int, _total_steps: int) -> bool:
+                    progress((step, estimated_total_steps))
+                    return True
+
+                codes = selected_model.generate(
+                    prefix_conditioning=conditioning,
+                    audio_prefix_codes=audio_prefix_codes,
+                    max_new_tokens=max_new_tokens,
+                    cfg_scale=cfg_scale,
+                    batch_size=1,
+                    sampling_params=dict(min_p=min_p),
+                    callback=update_progress_file,
+                )
+
+                wav_out = selected_model.autoencoder.decode(codes).cpu().detach()
+                sr_out = selected_model.autoencoder.sampling_rate
+                sr_out_final = sr_out
+
+                wav_out_2d = wav_out.squeeze(0)
+                if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
+                    wav_out_2d = wav_out_2d[0:1, :]
+
+                if prefix_length is not None:
+                    wav_out_2d = wav_out_2d[..., prefix_length:]
+                    prefix_length = None
+
+                all_wavs.append(wav_out_2d)
+                previous_wav = wav_out_2d
+                previous_text = chunk
+
+            if all_wavs and sr_out_final is not None:
+                concatenated_wav = torch.cat(all_wavs, dim=-1)
+                    
+                wav_numpy = concatenated_wav.squeeze().numpy()
+                wav_data = (wav_numpy * 32767).astype(np.int16)
+                wav_io = io.BytesIO()
+                wavfile.write(wav_io, sr_out_final, wav_data)
+                wav_io.seek(0)
+                
+                audio_segment = AudioSegment.from_wav(wav_io)
+                audio_segment.export(output_filename, format='mp3')
+                output_files.append(output_filename)
+                print(f"Saved to {output_filename}")
+        
+        if output_files:
             audio_segment = AudioSegment.from_mp3(output_files[-1])
             numpy_array = np.array(audio_segment.get_array_of_samples())
             return (sr_out_final, numpy_array), seed
