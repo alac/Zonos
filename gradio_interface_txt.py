@@ -2,6 +2,7 @@ import torch
 import torchaudio
 import gradio as gr
 from os import getenv
+import os
 import tempfile
 
 from zonos.model import Zonos
@@ -10,6 +11,14 @@ from zonos.conditioning import make_cond_dict, supported_language_codes
 device = "cuda"
 CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
+
+
+def get_speaker_files():
+    speaker_dir = "speakers"
+    if not os.path.exists(speaker_dir):
+        os.makedirs(speaker_dir)
+    speaker_files = [os.path.join(speaker_dir, f) for f in os.listdir(speaker_dir) if f.endswith(('.wav', '.mp3'))]
+    return speaker_files
 
 
 def load_model_if_needed(model_choice: str):
@@ -84,7 +93,8 @@ def generate_audio(
     model_choice,
     text,
     language,
-    speaker_audio,
+    speaker_audio_choice,
+    speaker_audio_upload,
     prefix_audio,
     e1,
     e2,
@@ -115,6 +125,7 @@ def generate_audio(
     """
     selected_model = load_model_if_needed(model_choice)
 
+    speaker_audio = speaker_audio_choice if speaker_audio_choice else speaker_audio_upload
     speaker_noised_bool = bool(speaker_noised)
     fmax = float(fmax)
     pitch_std = float(pitch_std)
@@ -144,7 +155,7 @@ def generate_audio(
         concatenated_wav = None
         sr_out_final = None
         
-        # Only use prefix_audio for the first line
+        # Initial prefix audio
         initial_prefix = prefix_audio if prefix_audio else None
 
         with open(txt_file.name, 'r', encoding='utf-8') as f:
@@ -153,11 +164,12 @@ def generate_audio(
             for i, current_text in enumerate(lines):
                 print(f"Generating audio for line {i+1}/{len(lines)}: '{current_text}'")
 
-                # Only use prefix audio for the first line
+                # Use either initial prefix or last generated audio as prefix
                 audio_prefix_codes = None
                 if i == 0 and initial_prefix is not None:
                     wav_prefix, sr_prefix = torchaudio.load(initial_prefix)
                     wav_prefix = wav_prefix.mean(0, keepdim=True)
+
                     wav_prefix = torchaudio.functional.resample(wav_prefix, sr_prefix, selected_model.autoencoder.sampling_rate)
                     wav_prefix = wav_prefix.to(device, dtype=torch.float32)
                     with torch.autocast(device, dtype=torch.float32):
@@ -200,15 +212,9 @@ def generate_audio(
                 sr_out = selected_model.autoencoder.sampling_rate
 
                 wav_out_2d = wav_out.squeeze(0)
-
                 if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
                     wav_out_2d = wav_out_2d[0:1, :]
-
-                # Add small silence between lines
-                silence_samples = int(0.1 * sr_out)  # 100ms silence
-                silence = torch.zeros((1, silence_samples), device=wav_out_2d.device)
-                wav_out_2d = torch.cat([wav_out_2d, silence], dim=-1)
-
+                
                 if concatenated_wav is None:
                     concatenated_wav = wav_out_2d
                 else:
@@ -303,8 +309,14 @@ def build_interface():
                 type="filepath",
             )
             with gr.Column():
-                speaker_audio = gr.Audio(
-                    label="Optional Speaker Audio (for cloning)",
+                speaker_audio = gr.Dropdown(
+                    choices=[""] + get_speaker_files(),
+                    value="",
+                    label="Speaker Audio (select from speakers folder or upload below)",
+                    type="value",
+                )
+                speaker_audio_upload = gr.Audio(
+                    label="Optional Speaker Audio Upload",
                     type="filepath",
                 )
                 speaker_noised_checkbox = gr.Checkbox(label="Denoise Speaker?", value=False)
@@ -428,6 +440,7 @@ def build_interface():
                 text,
                 language,
                 speaker_audio,
+                speaker_audio_upload,
                 prefix_audio,
                 emotion1,
                 emotion2,
