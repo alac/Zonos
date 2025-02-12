@@ -365,7 +365,7 @@ def build_interface():
                 fmax_slider = gr.Slider(0, 24000, value=24000, step=1, label="Fmax (Hz)")
                 vq_single_slider = gr.Slider(0.5, 0.8, 0.78, 0.01, label="VQ Score")
                 pitch_std_slider = gr.Slider(0.0, 300.0, value=45.0, step=1, label="Pitch Std")
-                speaking_rate_slider = gr.Slider(5.0, 30.0, value=15.0, step=0.5, label="Speaking Rate")
+                speaking_rate_slider = gr.Slider(5.0, 30.0, value=12.0, step=0.5, label="Speaking Rate")
 
             with gr.Column():
                 gr.Markdown("## Generation Parameters")
