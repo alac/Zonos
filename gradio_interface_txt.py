@@ -20,6 +20,7 @@ CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
 
 PROCESS_IN_CHUNKS = True
+CHUNK_SIZE = 50
 
 def wav_to_mp3(wav_data: np.ndarray, sample_rate: int, output_filename: str) -> str:
     """Convert numpy wav data to MP3 file and return the path"""
@@ -406,7 +407,7 @@ def generate_audio(
             with open(file.name, 'r', encoding='utf-8') as f:
                 full_text = f.read()
 
-            chunks = split_into_chunks(full_text, max_words=25)
+            chunks = split_into_chunks(full_text, max_words=CHUNK_SIZE)
             
             for i, chunk in enumerate(chunks):
                 print(f"Generating audio for chunk {i+1}/{len(chunks)}: '{chunk}'")
