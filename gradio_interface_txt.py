@@ -20,7 +20,7 @@ CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
 
 PROCESS_IN_CHUNKS = True
-CHUNK_SIZE = 60 # ~40 fit in 1500 tokens, so the cap for 2500 is probably 70ish
+CHUNK_SIZE = 50 # ~40 fit in 1500 tokens, so the cap for 2500 is probably 50ish
 MIN_CHUNK = 10
 OVERLAP_CHUNKS = False
 
@@ -77,44 +77,45 @@ def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
     """
     Split text into chunks of up to max_words, preferring natural break points.
     Tries to avoid splitting phrases awkwardly.
-    
+
     Args:
         text: The input text to split
         max_words: Maximum number of words per chunk
-    
+
     Returns:
         List of text chunks
     """
     # Define break points in order of preference
-    major_breaks = ['. ', '! ', '? ', '\n']  # Sentence endings
-    minor_breaks = ['; ', ': ', ', ']        # Clause breaks
-    
+    major_breaks = ['. ', '! ', '? ']  # Sentence endings
+    minor_breaks = ['; ', ': ', ', ']  # Clause breaks
+
     chunks = []
     while text:
         text = text.strip()
-        
+
         # If remaining text is short enough, add it as the final chunk
         if len(text.split()) <= max_words:
             if text:
                 chunks.append(text)
             break
-            
+
         # Look for break points within a window slightly larger than max_words
         # This allows us to look a bit ahead for better break points
         search_window = ' '.join(text.split()[:max_words + 5])
-        
+
         # First try to find major breaks within the normal word limit
         normal_window = ' '.join(text.split()[:max_words])
         best_pos = -1
         best_break = None
-        
+
         # Try major breaks first within normal window
         for break_point in major_breaks:
             pos = normal_window.rfind(break_point)
-            if pos > best_pos:
+
+            if pos > best_pos and pos > MIN_CHUNK:
                 best_pos = pos
                 best_break = break_point
-                
+
         # If no major break found, try minor breaks within normal window
         if best_pos == -1:
             for break_point in minor_breaks:
@@ -122,15 +123,15 @@ def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
                 if pos > best_pos and pos > MIN_CHUNK:
                     best_pos = pos
                     best_break = break_point
-        
+
         # If still no break found within normal window, look in extended window
         if best_pos == -1:
             for break_point in (major_breaks + minor_breaks):
                 pos = search_window.rfind(break_point)
-                if pos > best_pos and pos < len(normal_window) * 1.2:  # Allow slight overflow
+                if best_pos < pos and pos < len(normal_window) * 1.2 and pos > MIN_CHUNK:  # Allow slight overflow
                     best_pos = pos
                     best_break = break_point
-        
+
         # If still no break found, force break at word boundary near max_words
         if best_pos == -1:
             words = text.split()[:max_words]
@@ -141,7 +142,7 @@ def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
             # Include the break point in the chunk
             chunks.append(text[:best_pos + len(best_break)].strip())
             text = text[best_pos + len(best_break):].strip()
-    
+
     return chunks
 
 
