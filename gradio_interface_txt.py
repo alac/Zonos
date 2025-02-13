@@ -285,7 +285,6 @@ def generate_audio(
             print(f"Processing {file.name} -> {output_filename}")
             
             all_wavs = []
-            sr_out_final = None
             previous_wav = None
             previous_text = None
 
@@ -397,13 +396,13 @@ def generate_audio(
                 previous_wav = wav_out_2d
                 previous_text = chunk
 
-            if all_wavs and sr_out_final is not None:
+            if all_wavs and sr_out is not None:
                 concatenated_wav = torch.cat(all_wavs, dim=-1)
                     
                 wav_numpy = concatenated_wav.squeeze().numpy()
                 wav_data = (wav_numpy * 32767).astype(np.int16)
                 wav_io = io.BytesIO()
-                wavfile.write(wav_io, sr_out_final, wav_data)
+                wavfile.write(wav_io, sr_out, wav_data)
                 wav_io.seek(0)
                 
                 audio_segment = AudioSegment.from_wav(wav_io)
@@ -414,7 +413,7 @@ def generate_audio(
         if output_files:
             audio_segment = AudioSegment.from_mp3(output_files[-1])
             numpy_array = np.array(audio_segment.get_array_of_samples())
-            return (sr_out_final, numpy_array), seed
+            return (sr_out, numpy_array), seed
         else:
             return (None, None), seed
 
