@@ -22,7 +22,7 @@ CURRENT_MODEL = None
 CHUNK_SIZE = 50 # ~40 fit in 1500 tokens, so the cap for 2500 is probably 50ish
 MIN_CHUNK = 10
 OVERLAP_CHUNKS = False
-BEST_OF_TRIALS = 2
+BEST_OF_TRIALS = 1
 
 def wav_to_mp3(wav_data: np.ndarray, sample_rate: int, output_filename: str) -> str:
     """Convert numpy wav data to MP3 file and return the path"""
@@ -329,6 +329,7 @@ def generate_audio(
                 combined_text = chunk
                 if previous_text:
                     combined_text = previous_text + " " + chunk
+                combined_text = f",{combined_text}"
 
                 wav_sr_pairs = []
                 for i in range(BEST_OF_TRIALS):
