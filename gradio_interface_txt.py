@@ -22,6 +22,7 @@ CURRENT_MODEL = None
 CHUNK_SIZE = 50 # ~40 fit in 1500 tokens, so the cap for 2500 is probably 50ish
 MIN_CHUNK = 10
 OVERLAP_CHUNKS = False
+BEST_OF_TRIALS = 2
 
 def wav_to_mp3(wav_data: np.ndarray, sample_rate: int, output_filename: str) -> str:
     """Convert numpy wav data to MP3 file and return the path"""
@@ -329,43 +330,59 @@ def generate_audio(
                 if previous_text:
                     combined_text = previous_text + " " + chunk
 
-                # Generate current chunk
-                cond_dict = make_cond_dict(
-                    text=combined_text,
-                    language=language,
-                    speaker=speaker_embedding,
-                    emotion=emotion_tensor,
-                    vqscore_8=vq_tensor,
-                    fmax=fmax,
-                    pitch_std=pitch_std,
-                    speaking_rate=speaking_rate,
-                    dnsmos_ovrl=dnsmos_ovrl,
-                    speaker_noised=speaker_noised_bool,
-                    device=device,
-                    unconditional_keys=unconditional_keys,
-                )
-                conditioning = selected_model.prepare_conditioning(cond_dict)
+                wav_sr_pairs = []
+                for i in range(BEST_OF_TRIALS):
+                    if i == 0:
+                        torch.manual_seed(seed)                    
+                    else:
+                        temp_seed = torch.randint(0, 2**32 - 1, (1,)).item()
+                        torch.manual_seed(temp_seed)                    
 
-                estimated_generation_duration = 30 * len(combined_text) / 400
-                estimated_total_steps = int(estimated_generation_duration * 86)
+                    # Generate current chunk
+                    cond_dict = make_cond_dict(
+                        text=combined_text,
+                        language=language,
+                        speaker=speaker_embedding,
+                        emotion=emotion_tensor,
+                        vqscore_8=vq_tensor,
+                        fmax=fmax,
+                        pitch_std=pitch_std,
+                        speaking_rate=speaking_rate,
+                        dnsmos_ovrl=dnsmos_ovrl,
+                        speaker_noised=speaker_noised_bool,
+                        device=device,
+                        unconditional_keys=unconditional_keys,
+                    )
+                    conditioning = selected_model.prepare_conditioning(cond_dict)
 
-                def update_progress_file(_frame: torch.Tensor, step: int, _total_steps: int) -> bool:
-                    progress((step, estimated_total_steps))
-                    return True
+                    estimated_generation_duration = 30 * len(combined_text) / 400
+                    estimated_total_steps = int(estimated_generation_duration * 86)
 
-                codes = selected_model.generate(
-                    prefix_conditioning=conditioning,
-                    audio_prefix_codes=audio_prefix_codes,
-                    max_new_tokens=max_new_tokens,
-                    cfg_scale=cfg_scale,
-                    batch_size=1,
-                    sampling_params=dict(min_p=min_p),
-                    callback=update_progress_file,
-                )
+                    def update_progress_file(_frame: torch.Tensor, step: int, _total_steps: int) -> bool:
+                        progress((step, estimated_total_steps))
+                        return True
 
-                wav_out = selected_model.autoencoder.decode(codes).cpu().detach()
-                sr_out = selected_model.autoencoder.sampling_rate
-                sr_out_final = sr_out
+                    codes = selected_model.generate(
+                        prefix_conditioning=conditioning,
+                        audio_prefix_codes=audio_prefix_codes,
+                        max_new_tokens=max_new_tokens,
+                        cfg_scale=cfg_scale,
+                        batch_size=1,
+                        sampling_params=dict(min_p=min_p),
+                        callback=update_progress_file,
+                    )
+
+                    wav_out = selected_model.autoencoder.decode(codes).cpu().detach()
+                    sr_out = selected_model.autoencoder.sampling_rate
+                    wav_sr_pairs.append((wav_out, sr_out))
+
+                best_match = wav_sr_pairs[0]
+                best_length = best_match[0].size(-1)
+                for wav_sr_pair in wav_sr_pairs:
+                    if wav_sr_pair[0].size(-1) > best_length:
+                        best_length = wav_sr_pair[0].size(-1)
+                        best_match = wav_sr_pair
+                wav_out, sr_out = best_match
 
                 wav_out_2d = wav_out.squeeze(0)
                 if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
