@@ -20,7 +20,9 @@ CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
 
 PROCESS_IN_CHUNKS = True
-CHUNK_SIZE = 50
+CHUNK_SIZE = 60 # ~40 fit in 1500 tokens, so the cap for 2500 is probably 70ish
+MIN_CHUNK = 10
+OVERLAP_CHUNKS = False
 
 def wav_to_mp3(wav_data: np.ndarray, sample_rate: int, output_filename: str) -> str:
     """Convert numpy wav data to MP3 file and return the path"""
@@ -65,6 +67,10 @@ def add_silence_padding(wav: torch.Tensor, sr: int, duration: float = 0.1) -> to
     silence_samples = int(sr * duration)
     silence = torch.zeros((*wav.shape[:-1], silence_samples), device=wav.device)
     return torch.cat([wav, silence], dim=-1)
+
+
+def is_audio_too_short(wav_tensor, min_samples=1024):  # adjust min_samples as needed
+    return wav_tensor.size(-1) < min_samples
 
 
 def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
@@ -113,7 +119,7 @@ def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
         if best_pos == -1:
             for break_point in minor_breaks:
                 pos = normal_window.rfind(break_point)
-                if pos > best_pos:
+                if pos > best_pos and pos > MIN_CHUNK:
                     best_pos = pos
                     best_break = break_point
         
@@ -426,11 +432,17 @@ def generate_audio(
                         audio_prefix_codes = selected_model.autoencoder.encode(wav_prefix.unsqueeze(0))
                     prefix_length = wav_prefix.size(-1)
                 elif i > 0 and previous_wav is not None:
-                    # Use entire previous chunk as prefix
-                    previous_wav = previous_wav.to(device, dtype=torch.float32)
-                    with torch.autocast(device, dtype=torch.float32):
-                        audio_prefix_codes = selected_model.autoencoder.encode(previous_wav.unsqueeze(0))
-                    prefix_length = previous_wav.size(-1)
+                    # Check if audio is long enough before using as prefix
+                    if not is_audio_too_short(previous_wav) and OVERLAP_CHUNKS:
+                        previous_wav = previous_wav.to(device, dtype=torch.float32)
+                        with torch.autocast(device, dtype=torch.float32):
+                            audio_prefix_codes = selected_model.autoencoder.encode(previous_wav.unsqueeze(0))
+                        prefix_length = previous_wav.size(-1)
+                    else:
+                        # Skip using prefix for this chunk
+                        audio_prefix_codes = None
+                        prefix_length = None
+                        previous_text = None
 
                 combined_text = chunk
                 if previous_text:
