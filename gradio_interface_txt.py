@@ -19,7 +19,6 @@ device = "cuda"
 CURRENT_MODEL_TYPE = None
 CURRENT_MODEL = None
 
-PROCESS_IN_CHUNKS = True
 CHUNK_SIZE = 50 # ~40 fit in 1500 tokens, so the cap for 2500 is probably 50ish
 MIN_CHUNK = 10
 OVERLAP_CHUNKS = False
@@ -275,126 +274,7 @@ def generate_audio(
     vq_val = float(vq_single)
     vq_tensor = torch.tensor([vq_val] * 8, device=device).unsqueeze(0)
 
-    if txt_files and not PROCESS_IN_CHUNKS:
-        print("Processing text files...")
-        output_files = []
-        
-        for file in txt_files:
-            # Get output filename by replacing extension
-            output_filename = os.path.splitext(file.name)[0] + '.mp3'
-            output_filename = os.path.basename(output_filename)
-            print(f"Processing {file.name} -> {output_filename}")
-            
-            all_wavs = []
-            sr_out_final = None
-            previous_wav = None
-            
-            # Initial prefix audio
-            initial_prefix = prefix_audio if prefix_audio else None
-
-            with open(file.name, 'r', encoding='utf-8') as f:
-                lines = [line.strip() for line in f if line.strip()]
-            
-                for i, current_text in enumerate(lines):
-                    print(f"Generating audio for line {i+1}/{len(lines)}: '{current_text}'")
-                    current_text = f", {current_text}, "
-
-                    # Handle prefix audio
-                    audio_prefix_codes = None
-                    if i == 0 and initial_prefix is not None:
-                        # Handle initial prefix from file
-                        wav_prefix, sr_prefix = torchaudio.load(initial_prefix)
-                        wav_prefix = wav_prefix.mean(0, keepdim=True)
-                        wav_prefix = torchaudio.functional.resample(wav_prefix, sr_prefix, selected_model.autoencoder.sampling_rate)
-                        wav_prefix = wav_prefix.to(device, dtype=torch.float32)
-                        with torch.autocast(device, dtype=torch.float32):
-                            audio_prefix_codes = selected_model.autoencoder.encode(wav_prefix.unsqueeze(0))
-                    elif i > 0 and previous_wav is not None:
-                        # Split previous wav and use last second as prefix
-                        most_of_wav, last_second = split_last_seconds(previous_wav, selected_model.autoencoder.sampling_rate)
-                        all_wavs[-1] = most_of_wav
-                        
-                        if last_second is not None:
-                            # Move tensor to the correct device and ensure correct format
-                            last_second = last_second.to(device, dtype=torch.float32)
-                            with torch.autocast(device, dtype=torch.float32):
-                                audio_prefix_codes = selected_model.autoencoder.encode(last_second.unsqueeze(0))
-
-                    # Generate current line
-                    cond_dict = make_cond_dict(
-                        text=current_text,
-                        language=language,
-                        speaker=speaker_embedding,
-                        emotion=emotion_tensor,
-                        vqscore_8=vq_tensor,
-                        fmax=fmax,
-                        pitch_std=pitch_std,
-                        speaking_rate=speaking_rate,
-                        dnsmos_ovrl=dnsmos_ovrl,
-                        speaker_noised=speaker_noised_bool,
-                        device=device,
-                        unconditional_keys=unconditional_keys,
-                    )
-                    conditioning = selected_model.prepare_conditioning(cond_dict)
-
-                    estimated_generation_duration = 30 * len(current_text) / 400
-                    estimated_total_steps = int(estimated_generation_duration * 86)
-
-                    def update_progress_file(_frame: torch.Tensor, step: int, _total_steps: int) -> bool:
-                        progress((step, estimated_total_steps))
-                        return True
-
-                    codes = selected_model.generate(
-                        prefix_conditioning=conditioning,
-                        audio_prefix_codes=audio_prefix_codes,
-                        max_new_tokens=max_new_tokens,
-                        cfg_scale=cfg_scale,
-                        batch_size=1,
-                        sampling_params=dict(min_p=min_p),
-                        callback=update_progress_file,
-                    )
-
-                    wav_out = selected_model.autoencoder.decode(codes).cpu().detach()
-                    sr_out = selected_model.autoencoder.sampling_rate
-                    sr_out_final = sr_out
-
-                    wav_out_2d = wav_out.squeeze(0)
-                    if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
-                        wav_out_2d = wav_out_2d[0:1, :]
-
-                    wav_out_2d = add_silence_padding(wav_out_2d, sr_out)
-
-                    all_wavs.append(wav_out_2d)
-                    previous_wav = wav_out_2d
-
-            if all_wavs and sr_out_final is not None:
-                concatenated_wav = torch.cat(all_wavs, dim=-1)
-                
-                # Convert to numpy array
-                wav_numpy = concatenated_wav.squeeze().numpy()
-                
-                # Convert to MP3 and save directly to the output filename
-                wav_data = (wav_numpy * 32767).astype(np.int16)
-                wav_io = io.BytesIO()
-                wavfile.write(wav_io, sr_out_final, wav_data)
-                wav_io.seek(0)
-                
-                # Convert and save to the specified output filename
-                audio_segment = AudioSegment.from_wav(wav_io)
-                audio_segment.export(output_filename, format='mp3')
-                output_files.append(output_filename)
-                print(f"Saved to {output_filename}")
-        
-        # Return the last generated audio for preview
-        if output_files:
-            # Load the last MP3 for preview
-            audio_segment = AudioSegment.from_mp3(output_files[-1])
-            numpy_array = np.array(audio_segment.get_array_of_samples())
-            return (sr_out_final, numpy_array), seed
-        else:
-            return (None, None), seed
-
-    elif txt_files and PROCESS_IN_CHUNKS:
+    if txt_files:
         print("Processing text files...")
         output_files = []
         
