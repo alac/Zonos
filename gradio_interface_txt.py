@@ -73,6 +73,61 @@ def is_audio_too_short(wav_tensor, min_samples=1024):  # adjust min_samples as n
     return wav_tensor.size(-1) < min_samples
 
 
+def enhanced_trim_silence(
+        audio,
+        sr,
+        threshold_db=-40,
+        pad_ms=100,
+        progressive_threshold=True,
+        add_fade=True):
+    """
+    Enhanced silence trimming with progressive threshold and fading.
+    """
+    # Convert to mono if stereo
+    if len(audio.shape) > 1:
+        audio = np.mean(audio, axis=0)
+    
+    audio = audio.astype(np.float32)
+    
+    # Progressive threshold adjustment
+    if progressive_threshold:
+        thresholds = np.arange(threshold_db, -20, 5)
+        for thresh in thresholds:
+            threshold = librosa.db_to_amplitude(thresh)
+            magnitude = np.abs(audio)
+            mask = magnitude > threshold
+            if np.sum(mask) > 0.1 * len(audio):  # At least 10% of audio preserved
+                break
+    else:
+        threshold = librosa.db_to_amplitude(threshold_db)
+        magnitude = np.abs(audio)
+        mask = magnitude > threshold
+    
+    # Find continuous regions
+    pad_samples = int(pad_ms * sr / 1000)
+    nonzero = np.nonzero(mask)[0]
+    
+    if len(nonzero) == 0:
+        return audio
+    
+    start = max(0, nonzero[0] - pad_samples)
+    end = min(len(audio), nonzero[-1] + pad_samples)
+    
+    # Trim the audio
+    trimmed_audio = audio[start:end]
+    
+    # Add fade in/out
+    if add_fade:
+        fade_samples = min(int(0.01 * sr), len(trimmed_audio) // 4)  # 10ms fade
+        fade_in = np.linspace(0, 1, fade_samples)
+        fade_out = np.linspace(1, 0, fade_samples)
+        
+        trimmed_audio[:fade_samples] *= fade_in
+        trimmed_audio[-fade_samples:] *= fade_out
+    
+    return trimmed_audio
+
+
 def split_into_chunks(text: str, max_words: int = 20) -> list[str]:
     """
     Split text into chunks of up to max_words, preferring natural break points.
@@ -383,6 +438,8 @@ def generate_audio(
                         best_length = wav_sr_pair[0].size(-1)
                         best_match = wav_sr_pair
                 wav_out, sr_out = best_match
+
+                wav_out = enhanced_trim_silence(wav_out, sr_out)
 
                 wav_out_2d = wav_out.squeeze(0)
                 if wav_out_2d.dim() == 2 and wav_out_2d.size(0) > 1:
